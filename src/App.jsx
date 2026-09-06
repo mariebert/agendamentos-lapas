@@ -37,16 +37,15 @@ import {
   Sparkles
 } from 'lucide-react';
 
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : {
-      apiKey: "demo-api-key",
-      authDomain: "demo-app.firebaseapp.com",
-      projectId: "demo-app",
-      storageBucket: "demo-app.appspot.com",
-      messagingSenderId: "123456789",
-      appId: "1:123456789:web:abcdef"
-    };
+const firebaseConfig = {
+  apiKey: "AIzaSyAMWrfuNwarnxtwCmkLWLOTdYncTAI4P-U",
+  authDomain: "agendamento-lapas.firebaseapp.com",
+  projectId: "agendamento-lapas",
+  storageBucket: "agendamento-lapas.firebasestorage.app",
+  messagingSenderId: "894551251147",
+  appId: "1:894551251147:web:b34aa2d40505819212a34e",
+  measurementId: "G-KYZSDKTZTC"
+};
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
