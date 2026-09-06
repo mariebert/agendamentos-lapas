@@ -1,0 +1,1209 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  deleteDoc, 
+  doc 
+} from 'firebase/firestore';
+import { 
+  Calendar as CalendarIcon, 
+  Clock, 
+  User, 
+  Dna, 
+  Microscope, 
+  FlaskConical, 
+  Plus, 
+  Trash2, 
+  ChevronLeft, 
+  ChevronRight, 
+  AlertCircle, 
+  CheckCircle2, 
+  Filter, 
+  Search, 
+  Info, 
+  CalendarDays, 
+  Building, 
+  RefreshCw,
+  Eye,
+  Sparkles
+} from 'lucide-react';
+
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "demo-api-key",
+      authDomain: "demo-app.firebaseapp.com",
+      projectId: "demo-app",
+      storageBucket: "demo-app.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abcdef"
+    };
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'lapas-lab-schedule-v2';
+
+// Laboratory Modules Definition
+const LAB_MODULES = [
+  {
+    id: 'molecular',
+    name: 'Biologia Molecular',
+    shortName: 'Molecular',
+    subtitle: '3 Salas Disponíveis',
+    icon: Dna,
+    activeBg: 'bg-teal-500 text-slate-950 font-bold shadow-md shadow-teal-500/20'
+  },
+  {
+    id: 'dic',
+    name: 'Análise de Imagem (DIC)',
+    shortName: 'Microscópio DIC',
+    subtitle: 'Estação de Microscopia DIC',
+    icon: Eye,
+    activeBg: 'bg-purple-500 text-slate-950 font-bold shadow-md shadow-purple-500/20'
+  }
+];
+
+// Room Definitions with bold distinct color palettes
+const MOLECULAR_ROOMS = [
+  {
+    id: 'sala-1',
+    labId: 'molecular',
+    name: 'Sala de Extração & Preparo',
+    shortName: 'Extração',
+    description: 'Bancadas de extração de DNA/RNA, capela de fluxo laminar, centrífugas',
+    badgeClass: 'bg-red-600 text-white font-bold border-red-400',
+    headerClass: 'bg-gradient-to-r from-red-600 to-rose-700 text-white',
+    cardBorder: 'border-l-4 border-l-red-500 bg-red-950/40 border-red-900/60',
+    icon: FlaskConical
+  },
+  {
+    id: 'sala-2',
+    labId: 'molecular',
+    name: 'Sala de PCR & Fotodocumentação',
+    shortName: 'PCR & Fotodoc',
+    description: 'Termocicladores, PCR em Tempo Real (qPCR), Transiluminador e Fotodocumentador',
+    badgeClass: 'bg-emerald-600 text-white font-bold border-emerald-400',
+    headerClass: 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white',
+    cardBorder: 'border-l-4 border-l-emerald-500 bg-emerald-950/40 border-emerald-900/60',
+    icon: Dna
+  },
+  {
+    id: 'sala-3',
+    labId: 'molecular',
+    name: 'Sala de Eletroforese',
+    shortName: 'Eletroforese',
+    description: 'Cubas de eletroforese em gel de agarose/PAGE, fontes de tensão',
+    badgeClass: 'bg-blue-600 text-white font-bold border-blue-400',
+    headerClass: 'bg-gradient-to-r from-blue-600 to-indigo-700 text-white',
+    cardBorder: 'border-l-4 border-l-blue-500 bg-blue-950/40 border-blue-900/60',
+    icon: Microscope
+  }
+];
+
+const DIC_ROOMS = [
+  {
+    id: 'sala-dic',
+    labId: 'dic',
+    name: 'Microscópio DIC',
+    shortName: 'Microscópio DIC',
+    description: 'Microscópio de Contraste de Interferência Diferencial (DIC) - Lab. Análise de Imagem',
+    badgeClass: 'bg-purple-600 text-white font-bold border-purple-400',
+    headerClass: 'bg-gradient-to-r from-purple-600 to-indigo-800 text-white',
+    cardBorder: 'border-l-4 border-l-purple-500 bg-purple-950/40 border-purple-900/60',
+    icon: Eye
+  }
+];
+
+// Operating Hours (08:00 to 18:00)
+const TIME_SLOTS = [
+  '08:00', '09:00', '10:00', '11:00', '12:00',
+  '13:00', '14:00', '15:00', '16:00', '17:00', '18:00'
+];
+
+const WEEKDAYS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+
+function formatDateToISO(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseISODate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function getStartOfWeek(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  // Adjust Monday as index 0
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(d.setDate(diff));
+}
+
+function addDays(date, days) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function formatBrazilianDate(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [reservations, setReservations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Active Lab Module ('molecular' or 'dic')
+  const [activeLabModule, setActiveLabModule] = useState('molecular');
+
+  // Date State
+  const [selectedDate, setSelectedDate] = useState(formatDateToISO(new Date()));
+  
+  // Researcher Profile
+  const [researcherName, setResearcherName] = useState(() => {
+    return localStorage.getItem('lapas_lab_user_name') || '';
+  });
+
+  // Navigation & View States
+  const [activeTab, setActiveTab] = useState('week'); // 'week', 'day', 'list'
+  const [selectedRoomFilter, setSelectedRoomFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  // Form State
+  const [formData, setFormData] = useState({
+    roomId: 'sala-1',
+    labId: 'molecular',
+    date: formatDateToISO(new Date()),
+    startTime: '08:00',
+    endTime: '10:00',
+    researcherName: researcherName,
+    projectTitle: ''
+  });
+  const [formError, setFormError] = useState('');
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth initialization error:", err);
+      }
+    };
+
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (usr) => {
+      setUser(usr);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    setLoading(true);
+    // Public reservations collection
+    const resCollection = collection(db, 'artifacts', appId, 'public', 'data', 'reservations');
+
+    const unsubscribe = onSnapshot(
+      resCollection,
+      (snapshot) => {
+        const docsList = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data()
+        }));
+        setReservations(docsList);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Firestore sync error:", error);
+        showToast("Erro ao sincronizar dados do laboratório", "error");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Handle researcher name update
+  const handleNameChange = (e) => {
+    const val = e.target.value;
+    setResearcherName(val);
+    localStorage.setItem('lapas_lab_user_name', val);
+    setFormData(prev => ({ ...prev, researcherName: val }));
+  };
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
+  const timeToMinutes = (timeStr) => {
+    const [h, m] = timeStr.split(':').map(Number);
+    return h * 60 + m;
+  };
+
+  // Conflict prevention logic
+  const checkTimeConflict = (roomId, date, startTime, endTime, excludeId = null) => {
+    const startMins = timeToMinutes(startTime);
+    const endMins = timeToMinutes(endTime);
+
+    if (startMins >= endMins) {
+      return "O horário de término deve ser após o horário de início.";
+    }
+
+    const roomReservations = reservations.filter(r => 
+      r.roomId === roomId && 
+      r.date === date && 
+      r.id !== excludeId
+    );
+
+    for (const res of roomReservations) {
+      const resStart = timeToMinutes(res.startTime);
+      const resEnd = timeToMinutes(res.endTime);
+
+      if (startMins < resEnd && endMins > resStart) {
+        return `Conflito de horário! Já reservado por ${res.researcherName} (${res.startTime} às ${res.endTime}).`;
+      }
+    }
+
+    return null;
+  };
+
+  const handleCreateReservation = async (e) => {
+    e.preventDefault();
+    setFormError('');
+
+    if (!formData.researcherName.trim()) {
+      setFormError('Por favor, informe seu nome de pesquisador(a).');
+      return;
+    }
+
+    const conflict = checkTimeConflict(
+      formData.roomId,
+      formData.date,
+      formData.startTime,
+      formData.endTime
+    );
+
+    if (conflict) {
+      setFormError(conflict);
+      return;
+    }
+
+    try {
+      const resCollection = collection(db, 'artifacts', appId, 'public', 'data', 'reservations');
+      await addDoc(resCollection, {
+        roomId: formData.roomId,
+        labId: formData.labId,
+        date: formData.date,
+        startTime: formData.startTime,
+        endTime: formData.endTime,
+        researcherName: formData.researcherName.trim(),
+        projectTitle: formData.projectTitle.trim() || (formData.labId === 'dic' ? 'Uso do Microscópio DIC' : 'Uso do Laboratório'),
+        userId: user?.uid || 'anon',
+        createdAt: new Date().toISOString()
+      });
+
+      showToast(`Agendamento realizado com sucesso!`);
+      setIsModalOpen(false);
+      setFormData(prev => ({
+        ...prev,
+        projectTitle: ''
+      }));
+    } catch (err) {
+      console.error("Error creating reservation:", err);
+      setFormError('Erro ao salvar o agendamento no banco de dados. Tente novamente.');
+    }
+  };
+
+  const handleDeleteReservation = async (resId) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'reservations', resId);
+      await deleteDoc(docRef);
+      showToast(`Agendamento cancelado com sucesso.`);
+    } catch (err) {
+      console.error("Error deleting reservation:", err);
+      showToast("Não foi possível excluir a reserva.", "error");
+    }
+  };
+
+  // Quick Open Modal
+  const openNewBookingModal = (roomId = null, date = selectedDate, startTime = '08:00') => {
+    const targetLab = activeLabModule;
+    const defaultRoom = roomId || (targetLab === 'dic' ? 'sala-dic' : 'sala-1');
+    const startH = parseInt(startTime.split(':')[0], 10);
+    const endH = Math.min(startH + 2, 18);
+    const endTime = `${String(endH).padStart(2, '0')}:00`;
+
+    setFormData({
+      roomId: defaultRoom,
+      labId: targetLab,
+      date,
+      startTime,
+      endTime,
+      researcherName: researcherName || '',
+      projectTitle: targetLab === 'dic' ? 'Uso do Microscópio DIC' : ''
+    });
+    setFormError('');
+    setIsModalOpen(true);
+  };
+
+  // Get current active laboratory rooms
+  const currentLabRooms = useMemo(() => {
+    return activeLabModule === 'dic' ? DIC_ROOMS : MOLECULAR_ROOMS;
+  }, [activeLabModule]);
+
+  // Combine rooms helper
+  const allRooms = useMemo(() => {
+    return [...MOLECULAR_ROOMS, ...DIC_ROOMS];
+  }, []);
+
+  // Filtered reservations for current active tab and filters
+  const filteredReservations = useMemo(() => {
+    return reservations.filter(res => {
+      // Lab module check
+      const matchLab = (res.labId === activeLabModule) || 
+        (activeLabModule === 'dic' && res.roomId === 'sala-dic') ||
+        (activeLabModule === 'molecular' && res.roomId !== 'sala-dic');
+      
+      const matchRoom = selectedRoomFilter === 'all' || res.roomId === selectedRoomFilter;
+      const matchQuery = !searchQuery.trim() || 
+        res.researcherName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        res.projectTitle.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchLab && matchRoom && matchQuery;
+    });
+  }, [reservations, activeLabModule, selectedRoomFilter, searchQuery]);
+
+  // Current week days
+  const currentWeekDays = useMemo(() => {
+    const startOfWeek = getStartOfWeek(parseISODate(selectedDate));
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(startOfWeek, i);
+      return {
+        dateObj: d,
+        isoDate: formatDateToISO(d),
+        dayName: WEEKDAYS[i],
+        dayNumber: d.getDate(),
+        monthShort: d.toLocaleDateString('pt-BR', { month: 'short' }),
+        isToday: formatDateToISO(d) === formatDateToISO(new Date())
+      };
+    });
+  }, [selectedDate]);
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans antialiased selection:bg-teal-500 selection:text-white">
+      
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl border text-sm font-medium transition-all ${
+          toast.type === 'error' 
+            ? 'bg-rose-950 border-rose-800 text-rose-200' 
+            : 'bg-emerald-950 border-emerald-800 text-emerald-200'
+        }`}>
+          {toast.type === 'error' ? <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" /> : <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      {/* Main Top Header */}
+      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-30 px-4 lg:px-8 py-3.5">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+          
+          {/* Logo & Title */}
+          <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-gradient-to-tr from-teal-500 via-cyan-500 to-indigo-500 text-slate-950 font-bold shadow-lg shadow-teal-500/20">
+                <FlaskConical className="w-6 h-6 animate-pulse" />
+              </div>
+              <div>
+                <h1 className="text-xl font-extrabold tracking-tight text-white flex items-center gap-2">
+                  Agendamentos LAPAS
+                </h1>
+                <p className="text-xs text-slate-400">Sistema de Escala dos Laboratórios (08:00 às 18:00)</p>
+              </div>
+            </div>
+
+            {/* Mobile New Booking Button */}
+            <button
+              onClick={() => openNewBookingModal()}
+              className="md:hidden flex items-center gap-1.5 px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold rounded-lg text-xs shadow-md transition-all active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Reservar</span>
+            </button>
+          </div>
+
+          {/* Laboratory Module Switcher (Top Main Tabs) */}
+          <div className="flex items-center gap-1.5 bg-slate-950/80 p-1.5 rounded-2xl border border-slate-800 w-full md:w-auto justify-center">
+            {LAB_MODULES.map(lab => {
+              const LabIcon = lab.icon;
+              const isActive = activeLabModule === lab.id;
+
+              return (
+                <button
+                  key={lab.id}
+                  onClick={() => {
+                    setActiveLabModule(lab.id);
+                    setSelectedRoomFilter('all');
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs transition-all ${
+                    isActive 
+                      ? lab.activeBg 
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 font-medium'
+                  }`}
+                >
+                  <LabIcon className="w-4 h-4" />
+                  <div className="text-left">
+                    <div className="leading-tight font-bold">{lab.name}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* User Researcher Bar */}
+          <div className="flex items-center gap-2.5 w-full md:w-auto bg-slate-800/60 p-2 rounded-xl border border-slate-800 text-xs">
+            <div className="flex items-center gap-1.5 px-1 text-slate-300 font-semibold shrink-0">
+              <User className="w-4 h-4 text-teal-400" />
+              <span className="hidden sm:inline">Pesquisador:</span>
+            </div>
+            <input
+              type="text"
+              placeholder="Digite seu nome (ex: Dr. Carlos)"
+              value={researcherName}
+              onChange={handleNameChange}
+              className="bg-slate-900 border border-slate-700/80 rounded-lg px-3 py-1.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-teal-500 text-xs w-full sm:w-48 font-medium"
+            />
+            
+            <button
+              onClick={() => openNewBookingModal()}
+              className="hidden md:flex items-center gap-1.5 px-4 py-1.5 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-bold rounded-lg text-xs shadow-md shadow-teal-500/10 transition-all active:scale-95 shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Agendar</span>
+            </button>
+          </div>
+
+        </div>
+      </header>
+
+      {/* Sub Header - Room Cards with Distinct Colors */}
+      <section className="bg-slate-900/50 border-b border-slate-800 px-4 lg:px-8 py-3.5">
+        <div className="max-w-7xl mx-auto">
+          
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-teal-400" />
+              <span>{activeLabModule === 'molecular' ? 'Salas do Laboratório de Biologia Molecular' : 'Laboratório de Análise de Imagem'}</span>
+            </h2>
+          </div>
+
+          <div className={`grid grid-cols-1 ${activeLabModule === 'molecular' ? 'md:grid-cols-3' : 'grid-cols-1'} gap-3.5`}>
+            {currentLabRooms.map(room => {
+              const RoomIcon = room.icon;
+              const isSelected = selectedRoomFilter === room.id;
+              
+              return (
+                <div 
+                  key={room.id}
+                  onClick={() => {
+                    if (activeLabModule === 'molecular') {
+                      setSelectedRoomFilter(isSelected ? 'all' : room.id);
+                    }
+                  }}
+                  className={`rounded-2xl p-3.5 border transition-all flex items-center justify-between gap-3.5 ${
+                    activeLabModule === 'molecular' ? 'cursor-pointer hover:bg-slate-800/70' : ''
+                  } ${
+                    isSelected && activeLabModule === 'molecular'
+                      ? 'border-slate-400 bg-slate-800/90 shadow-lg' 
+                      : 'border-slate-800 bg-slate-800/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className={`p-3 rounded-xl shadow-md ${room.badgeClass} shrink-0`}>
+                      <RoomIcon className="w-6 h-6" />
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-sm text-slate-100 truncate">{room.name}</h3>
+                        {isSelected && activeLabModule === 'molecular' && (
+                          <span className="text-[10px] font-bold bg-slate-100 text-slate-900 px-2 py-0.5 rounded-full uppercase shrink-0">Filtrado</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{room.description}</p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openNewBookingModal(room.id);
+                    }}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-teal-400 rounded-xl border border-slate-700 transition-colors shrink-0 flex items-center gap-1 text-xs font-semibold"
+                    title="Reservar Horário"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span className="hidden sm:inline">Reservar</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+        </div>
+      </section>
+
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-8 flex flex-col gap-6">
+
+        {/* View Switching & Control Toolbar */}
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-slate-800/40 p-3 rounded-2xl border border-slate-800">
+          
+          {/* View Mode Buttons */}
+          <div className="flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800 text-xs">
+            <button
+              onClick={() => setActiveTab('week')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                activeTab === 'week' ? 'bg-teal-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <CalendarDays className="w-4 h-4" />
+              <span>Visão Semanal</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('day')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                activeTab === 'day' ? 'bg-teal-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              <span>Dia Detalhado</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('list')}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                activeTab === 'list' ? 'bg-teal-500 text-slate-950 font-bold shadow' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Building className="w-4 h-4" />
+              <span>Lista de Agendamentos</span>
+            </button>
+          </div>
+
+          {/* Date Picker & Search */}
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            
+            {/* Date Navigator */}
+            <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded-xl overflow-hidden text-xs">
+              <button
+                onClick={() => {
+                  const current = parseISODate(selectedDate);
+                  const daysToSub = activeTab === 'week' ? 7 : 1;
+                  setSelectedDate(formatDateToISO(addDays(current, -daysToSub)));
+                }}
+                className="p-2 hover:bg-slate-800 text-slate-300 transition-colors"
+                title="Anterior"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent text-slate-200 px-3 py-1.5 focus:outline-none text-xs font-semibold"
+              />
+
+              <button
+                onClick={() => {
+                  const current = parseISODate(selectedDate);
+                  const daysToAdd = activeTab === 'week' ? 7 : 1;
+                  setSelectedDate(formatDateToISO(addDays(current, daysToAdd)));
+                }}
+                className="p-2 hover:bg-slate-800 text-slate-300 transition-colors"
+                title="Próximo"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Today Button */}
+            <button
+              onClick={() => setSelectedDate(formatDateToISO(new Date()))}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-medium transition-colors"
+            >
+              Hoje
+            </button>
+
+            {/* Search Input */}
+            <div className="relative flex-1 sm:w-48">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Buscar pesquisador..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-slate-200 placeholder-slate-500 text-xs focus:outline-none focus:border-teal-500"
+              />
+            </div>
+
+            {/* Filter Reset if active */}
+            {(selectedRoomFilter !== 'all' || searchQuery) && (
+              <button
+                onClick={() => {
+                  setSelectedRoomFilter('all');
+                  setSearchQuery('');
+                }}
+                className="p-2 text-xs bg-slate-800 text-rose-400 hover:bg-slate-700 rounded-xl border border-slate-700"
+                title="Limpar Filtros"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+          </div>
+
+        </div>
+
+        {/* Loading Indicator */}
+        {loading && (
+          <div className="flex items-center justify-center py-12 text-slate-400 gap-3">
+            <RefreshCw className="w-5 h-5 animate-spin text-teal-400" />
+            <span className="text-sm">Carregando agendamentos em tempo real...</span>
+          </div>
+        )}
+
+        {!loading && activeTab === 'week' && (
+          <div className="bg-slate-800/30 rounded-2xl border border-slate-800 overflow-x-auto">
+            <div className="min-w-[900px]">
+              
+              {/* Days Header Row */}
+              <div className="grid grid-cols-8 border-b border-slate-800 bg-slate-900/60 sticky top-0 z-10">
+                <div className="p-3 text-xs font-semibold text-slate-400 border-r border-slate-800 flex items-center justify-center">
+                  Horário
+                </div>
+                {currentWeekDays.map((day) => (
+                  <div 
+                    key={day.isoDate} 
+                    className={`p-3 text-center border-r border-slate-800 last:border-r-0 cursor-pointer transition-colors ${
+                      day.isToday ? 'bg-teal-950/40 text-teal-300 font-bold' : 'hover:bg-slate-800/40'
+                    }`}
+                    onClick={() => {
+                      setSelectedDate(day.isoDate);
+                      setActiveTab('day');
+                    }}
+                  >
+                    <div className="text-[11px] text-slate-400 uppercase tracking-wider">{day.dayName}</div>
+                    <div className="text-sm font-semibold mt-0.5 flex items-center justify-center gap-1">
+                      <span>{day.dayNumber} {day.monthShort}</span>
+                      {day.isToday && <span className="w-1.5 h-1.5 rounded-full bg-teal-400 inline-block"></span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Time Slots (08:00 to 18:00) */}
+              <div className="divide-y divide-slate-800/60">
+                {TIME_SLOTS.slice(0, -1).map((slot, idx) => {
+                  const nextSlot = TIME_SLOTS[idx + 1];
+                  const slotLabel = `${slot} - ${nextSlot}`;
+
+                  return (
+                    <div key={slot} className="grid grid-cols-8 min-h-[85px]">
+                      
+                      {/* Time Label Column */}
+                      <div className="p-2 text-xs font-medium text-slate-400 border-r border-slate-800 bg-slate-900/40 flex flex-col justify-center items-center gap-1">
+                        <Clock className="w-3.5 h-3.5 text-slate-500" />
+                        <span>{slotLabel}</span>
+                      </div>
+
+                      {/* 7 Day Columns */}
+                      {currentWeekDays.map((day) => {
+                        const dayReservations = filteredReservations.filter(res => {
+                          if (res.date !== day.isoDate) return false;
+                          const resStart = timeToMinutes(res.startTime);
+                          const resEnd = timeToMinutes(res.endTime);
+                          const slotStart = timeToMinutes(slot);
+                          const slotEnd = timeToMinutes(nextSlot);
+                          return resStart < slotEnd && resEnd > slotStart;
+                        });
+
+                        return (
+                          <div 
+                            key={day.isoDate} 
+                            className="border-r border-slate-800/60 last:border-r-0 p-1.5 flex flex-col gap-1.5 hover:bg-slate-800/20 transition-colors relative group"
+                          >
+                            {dayReservations.length > 0 ? (
+                              dayReservations.map(res => {
+                                const room = allRooms.find(r => r.id === res.roomId);
+                                return (
+                                  <div
+                                    key={res.id}
+                                    className={`p-2 rounded-xl text-xs ${room?.cardBorder || 'bg-slate-800 border-l-4 border-l-slate-500'} shadow-md flex flex-col justify-between group/card relative transition-all`}
+                                  >
+                                    <div>
+                                      <div className="flex items-center justify-between gap-1 mb-1">
+                                        <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold uppercase tracking-wider ${room?.badgeClass || 'bg-slate-700 text-slate-300'}`}>
+                                          {room?.shortName || res.roomId}
+                                        </span>
+                                        <span className="text-[10px] text-slate-300 font-mono font-bold bg-slate-900/60 px-1.5 py-0.5 rounded border border-slate-800">
+                                          {res.startTime}-{res.endTime}
+                                        </span>
+                                      </div>
+                                      
+                                      <p className="font-bold text-slate-100 truncate text-[11px] mt-1" title={res.projectTitle}>
+                                        {res.projectTitle}
+                                      </p>
+                                      
+                                      <p className="text-[10px] text-slate-300 font-medium truncate mt-1 flex items-center gap-1">
+                                        <User className="w-2.5 h-2.5 shrink-0 text-slate-400" />
+                                        <span>{res.researcherName}</span>
+                                      </p>
+                                    </div>
+
+                                    {/* Delete Button */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteReservation(res.id);
+                                      }}
+                                      className="absolute bottom-1.5 right-1.5 opacity-0 group-hover/card:opacity-100 p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-all"
+                                      title="Cancelar Reserva"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              // Add slot button when empty
+                              <button
+                                onClick={() => openNewBookingModal(null, day.isoDate, slot)}
+                                className="w-full h-full min-h-[60px] rounded-lg border border-dashed border-slate-800 hover:border-teal-500/50 hover:bg-teal-500/5 transition-all flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 text-slate-500 hover:text-teal-400"
+                              >
+                                <Plus className="w-4 h-4 mb-0.5" />
+                                <span className="text-[10px] font-semibold">Reservar</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                    </div>
+                  );
+                })}
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {!loading && activeTab === 'day' && (
+          <div className="flex flex-col gap-4">
+            
+            <div className="flex items-center justify-between bg-slate-800/40 p-3 rounded-xl border border-slate-800">
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="w-5 h-5 text-teal-400" />
+                <span className="font-bold text-slate-100 text-sm capitalize">
+                  Agenda de {parseISODate(selectedDate).toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                </span>
+              </div>
+              <span className="text-xs text-slate-400 font-semibold">
+                {activeLabModule === 'molecular' ? '3 Salas do Laboratório Molecular' : 'Microscópio DIC (Análise de Imagem)'}
+              </span>
+            </div>
+
+            <div className={`grid grid-cols-1 ${activeLabModule === 'molecular' ? 'md:grid-cols-3' : 'grid-cols-1 max-w-2xl mx-auto w-full'} gap-6`}>
+              {currentLabRooms.map(room => {
+                const RoomIcon = room.icon;
+                const roomDayReservations = filteredReservations.filter(r => 
+                  r.roomId === room.id && r.date === selectedDate
+                ).sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+                return (
+                  <div key={room.id} className="bg-slate-800/30 rounded-2xl border border-slate-800 flex flex-col overflow-hidden shadow-lg">
+                    
+                    {/* Room Header */}
+                    <div className={`p-4 ${room.headerClass} flex items-center justify-between shadow-md`}>
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-black/20 rounded-xl backdrop-blur-sm">
+                          <RoomIcon className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-sm leading-tight">{room.name}</h3>
+                          <p className="text-[11px] opacity-90 font-medium">{roomDayReservations.length} agendamento(s) hoje</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => openNewBookingModal(room.id, selectedDate, '08:00')}
+                        className="p-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-white transition-colors"
+                        title="Agendar para este espaço"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Timeline Body */}
+                    <div className="p-3.5 flex-1 flex flex-col gap-2.5">
+                      {roomDayReservations.length === 0 ? (
+                        <div className="py-12 flex flex-col items-center justify-center text-center text-slate-500 gap-2">
+                          <CheckCircle2 className="w-8 h-8 text-teal-500/40" />
+                          <p className="text-xs font-medium">Livre durante todo o dia.</p>
+                          <button
+                            onClick={() => openNewBookingModal(room.id, selectedDate, '08:00')}
+                            className="mt-2 text-xs text-teal-400 hover:text-teal-300 font-bold underline flex items-center gap-1"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Reservar Horário
+                          </button>
+                        </div>
+                      ) : (
+                        roomDayReservations.map(res => (
+                          <div
+                            key={res.id}
+                            className={`p-4 rounded-xl ${room.cardBorder} shadow-md flex flex-col gap-2 relative group hover:border-slate-500 transition-all`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-100 flex items-center gap-1.5 font-mono bg-slate-900/80 px-2 py-1 rounded border border-slate-800">
+                                <Clock className="w-3.5 h-3.5 text-teal-400" />
+                                {res.startTime} - {res.endTime}
+                              </span>
+                              <button
+                                onClick={() => handleDeleteReservation(res.id)}
+                                className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-colors"
+                                title="Cancelar Agendamento"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            <div className="mt-1">
+                              <h4 className="font-bold text-slate-100 text-sm leading-tight">{res.projectTitle}</h4>
+                              <p className="text-xs text-slate-300 mt-1.5 flex items-center gap-1.5 font-medium">
+                                <User className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                                <span>{res.researcherName}</span>
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                  </div>
+                );
+              })}
+            </div>
+
+          </div>
+        )}
+
+        {!loading && activeTab === 'list' && (
+          <div className="bg-slate-800/30 rounded-2xl border border-slate-800 overflow-hidden">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between flex-wrap gap-3">
+              <h3 className="font-bold text-sm text-slate-200 flex items-center gap-2">
+                <Building className="w-4 h-4 text-teal-400" />
+                <span>Todos os Agendamentos - {activeLabModule === 'molecular' ? 'Laboratório Molecular' : 'Microscópio DIC'}</span>
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-700 text-slate-200 font-bold">
+                  {filteredReservations.length}
+                </span>
+              </h3>
+
+              {activeLabModule === 'molecular' && (
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-slate-400" />
+                  <select
+                    value={selectedRoomFilter}
+                    onChange={(e) => setSelectedRoomFilter(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-teal-500 font-medium"
+                  >
+                    <option value="all">Todas as Salas</option>
+                    {MOLECULAR_ROOMS.map(r => (
+                      <option key={r.id} value={r.id}>{r.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {filteredReservations.length === 0 ? (
+              <div className="py-16 text-center text-slate-500 flex flex-col items-center gap-2">
+                <Info className="w-8 h-8 text-slate-600" />
+                <p className="text-sm">Nenhum agendamento encontrado para o filtro selecionado.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800/80">
+                {filteredReservations
+                  .sort((a, b) => a.date.localeCompare(b.date) || timeToMinutes(a.startTime) - timeToMinutes(b.startTime))
+                  .map(res => {
+                    const room = allRooms.find(r => r.id === res.roomId);
+                    const RoomIcon = room?.icon || FlaskConical;
+
+                    return (
+                      <div key={res.id} className="p-4 hover:bg-slate-800/40 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3.5">
+                          <div className={`p-3 rounded-xl ${room?.badgeClass || 'bg-slate-800'} shrink-0 mt-0.5 shadow-md`}>
+                            <RoomIcon className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${room?.badgeClass || 'bg-slate-700 text-slate-300'}`}>
+                                {room?.name || res.roomId}
+                              </span>
+                              <span className="text-xs font-semibold text-teal-300 flex items-center gap-1 font-mono">
+                                <CalendarIcon className="w-3 h-3" />
+                                {formatBrazilianDate(res.date)}
+                              </span>
+                              <span className="text-xs font-semibold text-slate-200 flex items-center gap-1 font-mono">
+                                <Clock className="w-3 h-3 text-slate-400" />
+                                {res.startTime} às {res.endTime}
+                              </span>
+                            </div>
+
+                            <h4 className="font-bold text-slate-100 text-sm">{res.projectTitle}</h4>
+                            
+                            <div className="flex items-center gap-3 text-xs text-slate-300 mt-1">
+                              <span className="flex items-center gap-1 text-slate-300 font-semibold">
+                                <User className="w-3.5 h-3.5 text-teal-400" />
+                                {res.researcherName}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 self-end md:self-center">
+                          <button
+                            onClick={() => handleDeleteReservation(res.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/60 rounded-lg transition-colors font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Cancelar</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        )}
+
+      </main>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-800 bg-slate-900 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-lg ${formData.labId === 'dic' ? 'bg-purple-500/10 text-purple-400' : 'bg-teal-500/10 text-teal-400'}`}>
+                  <Plus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-100 text-base">
+                    {formData.labId === 'dic' ? 'Novo Agendamento - Microscópio DIC' : 'Novo Agendamento - Biologia Molecular'}
+                  </h3>
+                  <p className="text-xs text-slate-400">Escolha o horário desejado para a utilização</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsModalOpen(false)}
+                className="text-slate-400 hover:text-slate-200 p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleCreateReservation} className="p-5 overflow-y-auto space-y-4 text-xs">
+              
+              {/* Form Error Alert */}
+              {formError && (
+                <div className="p-3 bg-rose-950/60 border border-rose-800 rounded-xl text-rose-200 flex items-start gap-2 font-medium">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              {/* Researcher Name */}
+              <div>
+                <label className="block text-slate-200 font-semibold mb-1">Nome do Pesquisador(a) *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Dra. Juliana Silva"
+                  value={formData.researcherName}
+                  onChange={(e) => setFormData(prev => ({ ...prev, researcherName: e.target.value }))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teal-500 text-xs font-medium"
+                />
+              </div>
+
+              {/* Room Selection */}
+              {formData.labId === 'molecular' ? (
+                <div>
+                  <label className="block text-slate-200 font-semibold mb-1.5">Selecione a Sala *</label>
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {MOLECULAR_ROOMS.map(r => {
+                      const RoomIcon = r.icon;
+                      const isSelected = formData.roomId === r.id;
+
+                      return (
+                        <label 
+                          key={r.id} 
+                          className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                            isSelected 
+                              ? 'border-teal-500 bg-slate-800 shadow-md ring-1 ring-teal-500' 
+                              : 'bg-slate-800/40 border-slate-800 hover:bg-slate-800/80'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="roomId"
+                            value={r.id}
+                            checked={formData.roomId === r.id}
+                            onChange={(e) => setFormData(prev => ({ ...prev, roomId: e.target.value }))}
+                            className="text-teal-500 focus:ring-teal-500 h-4 w-4"
+                          />
+
+                          <div className={`p-2 rounded-lg ${r.badgeClass} shrink-0`}>
+                            <RoomIcon className="w-4 h-4" />
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-slate-100 text-xs">{r.name}</div>
+                            <div className="text-[10px] text-slate-400 truncate">{r.description}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-purple-950/40 border border-purple-800/60 flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-purple-600 text-white shrink-0">
+                    <Eye className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-purple-200 text-xs">Microscópio DIC</h4>
+                    <p className="text-[11px] text-purple-300/80">Laboratório de Análise de Imagem</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Date & Hours */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-slate-200 font-semibold mb-1">Data *</label>
+                  <input
+                    type="date"
+                    required
+                    value={formData.date}
+                    onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-teal-500 font-medium"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-200 font-semibold mb-1">Início *</label>
+                  <select
+                    value={formData.startTime}
+                    onChange={(e) => setFormData(prev => ({ ...prev, startTime: e.target.value }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-teal-500 font-medium"
+                  >
+                    {TIME_SLOTS.slice(0, -1).map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-200 font-semibold mb-1">Término *</label>
+                  <select
+                    value={formData.endTime}
+                    onChange={(e) => setFormData(prev => ({ ...prev, endTime: e.target.value }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-teal-500 font-medium"
+                  >
+                    {TIME_SLOTS.slice(1).map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Procedure / Project Title */}
+              <div>
+                <label className="block text-slate-200 font-semibold mb-1">
+                  {formData.labId === 'dic' ? 'Descrição / Amostra (Opcional)' : 'Procedimento / Experimento *'}
+                </label>
+                <input
+                  type="text"
+                  required={formData.labId === 'molecular'}
+                  placeholder={formData.labId === 'dic' ? 'Ex: Análise de lâminas em DIC' : 'Ex: Extração de RNA e PCR'}
+                  value={formData.projectTitle}
+                  onChange={(e) => setFormData(prev => ({ ...prev, projectTitle: e.target.value }))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teal-500 font-medium"
+                />
+              </div>
+
+              {/* Modal Action Buttons */}
+              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className={`px-5 py-2 font-bold rounded-xl shadow-lg transition-all active:scale-95 ${
+                    formData.labId === 'dic'
+                      ? 'bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 text-white shadow-purple-500/20'
+                      : 'bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 shadow-teal-500/20'
+                  }`}
+                >
+                  Confirmar Agendamento
+                </button>
+              </div>
+
+            </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <footer className="border-t border-slate-800 py-4 px-4 text-center text-xs text-slate-500 mt-auto">
+        <p>Agendamentos LAPAS — Sistema de Agendamento Unificado dos Laboratórios (08:00 às 18:00)</p>
+      </footer>
+
+    </div>
+  );
+}
