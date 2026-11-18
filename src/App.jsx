@@ -11,7 +11,9 @@ import {
   collection, 
   onSnapshot, 
   addDoc, 
-  deleteDoc, 
+  updateDoc,
+  serverTimestamp,
+  Timestamp,
   doc 
 } from 'firebase/firestore';
 import { 
@@ -277,6 +279,7 @@ export default function App() {
     const roomReservations = reservations.filter(r => 
       r.roomId === roomId && 
       r.date === date && 
+      r.status !== 'cancelled' &&
       r.id !== excludeId
     );
 
@@ -313,6 +316,11 @@ export default function App() {
       return;
     }
 
+    if (!user) {
+      setFormError('Aguarde a identificação automática do aplicativo e tente novamente.');
+      return;
+    }
+
     try {
       const resCollection = collection(db, 'artifacts', appId, 'public', 'data', 'reservations');
       await addDoc(resCollection, {
@@ -323,8 +331,10 @@ export default function App() {
         endTime: formData.endTime,
         researcherName: formData.researcherName.trim(),
         projectTitle: formData.projectTitle.trim() || (formData.labId === 'dic' ? 'Uso do Microscópio DIC' : 'Uso do Laboratório'),
-        userId: user?.uid || 'anon',
-        createdAt: new Date().toISOString()
+        userId: user.uid,
+        createdAt: new Date().toISOString(),
+        status: 'active',
+        startAt: Timestamp.fromDate(new Date(`${formData.date}T${formData.startTime}:00`))
       });
 
       showToast(`Agendamento realizado com sucesso!`);
@@ -340,14 +350,48 @@ export default function App() {
   };
 
   const handleDeleteReservation = async (resId) => {
+    const reservation = reservations.find((item) => item.id === resId);
+    const startAt = reservation?.startAt?.toDate?.();
+
+    // A reserva só pode ser cancelada pelo usuário que a criou e antes do início.
+    if (!reservation || !user || reservation.userId !== user.uid) {
+      showToast("Você só pode cancelar seus próprios agendamentos.", "error");
+      return;
+    }
+
+    // Registros antigos não possuem startAt e ficam preservados.
+    if (!startAt || startAt <= new Date() || reservation.status === 'cancelled') {
+      showToast("Esse horário já começou ou é um registro antigo protegido.", "error");
+      return;
+    }
+
+    if (!window.confirm("Deseja cancelar este agendamento? O registro ficará guardado no histórico.")) {
+      return;
+    }
+
     try {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'reservations', resId);
-      await deleteDoc(docRef);
-      showToast(`Agendamento cancelado com sucesso.`);
+      // Cancelamento lógico: não apaga o documento nem seu histórico.
+      await updateDoc(docRef, {
+        status: 'cancelled',
+        cancelledAt: serverTimestamp()
+      });
+      showToast("Agendamento cancelado. O registro foi preservado no histórico.");
     } catch (err) {
-      console.error("Error deleting reservation:", err);
-      showToast("Não foi possível excluir a reserva.", "error");
+      console.error("Error cancelling reservation:", err);
+      showToast("Não foi possível cancelar. Confira se o horário já começou.", "error");
     }
+  };
+
+  const canCancelReservation = (reservation) => {
+    const startAt = reservation?.startAt?.toDate?.();
+    return Boolean(
+      user &&
+      reservation.userId === user.uid &&
+      reservation.status !== 'cancelled' &&
+      startAt &&
+      startAt > new Date()
+    );
   };
 
   // Quick Open Modal
@@ -384,6 +428,7 @@ export default function App() {
   // Filtered reservations for current active tab and filters
   const filteredReservations = useMemo(() => {
     return reservations.filter(res => {
+      if (res.status === 'cancelled') return false;
       // Lab module check
       const matchLab = (res.labId === activeLabModule) || 
         (activeLabModule === 'dic' && res.roomId === 'sala-dic') ||
@@ -786,17 +831,19 @@ export default function App() {
                                       </p>
                                     </div>
 
-                                    {/* Delete Button */}
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDeleteReservation(res.id);
-                                      }}
-                                      className="absolute bottom-1.5 right-1.5 opacity-0 group-hover/card:opacity-100 p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-all"
-                                      title="Cancelar Reserva"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
+                                    {/* O botão só aparece para o responsável, antes do início. */}
+                                    {canCancelReservation(res) && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteReservation(res.id);
+                                        }}
+                                        className="absolute bottom-1.5 right-1.5 opacity-0 group-hover/card:opacity-100 p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-all"
+                                        title="Cancelar Reserva"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                   </div>
                                 );
                               })
@@ -893,13 +940,15 @@ export default function App() {
                                 <Clock className="w-3.5 h-3.5 text-teal-400" />
                                 {res.startTime} - {res.endTime}
                               </span>
-                              <button
-                                onClick={() => handleDeleteReservation(res.id)}
-                                className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-colors"
-                                title="Cancelar Agendamento"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {canCancelReservation(res) && (
+                                <button
+                                  onClick={() => handleDeleteReservation(res.id)}
+                                  className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-900 rounded transition-colors"
+                                  title="Cancelar Agendamento"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
 
                             <div className="mt-1">
@@ -995,15 +1044,17 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 self-end md:self-center">
-                          <button
-                            onClick={() => handleDeleteReservation(res.id)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/60 rounded-lg transition-colors font-semibold"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Cancelar</span>
-                          </button>
-                        </div>
+                        {canCancelReservation(res) && (
+                          <div className="flex items-center gap-2 self-end md:self-center">
+                            <button
+                              onClick={() => handleDeleteReservation(res.id)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 bg-rose-950/30 hover:bg-rose-900/50 border border-rose-900/60 rounded-lg transition-colors font-semibold"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Cancelar</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
